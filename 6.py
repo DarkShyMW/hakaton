@@ -1,66 +1,78 @@
 import cv2
 import numpy as np
 
-class DistanceMeasurementCar:
-    def __init__(self):
-        self.camera = cv2.VideoCapture(0)  # Подключение камеры
-        self.quarters_count = 0
-        self.previous_marker = None  # Предыдущий обнаруженный маркер
+class TrafficLightStartCar:
+    def __init__(self, arduino):
+        self.arduino = arduino
+        self.camera = cv2.VideoCapture(0)  # Камера для захвата изображения
+        self.default_speed = 1350  # Стандартная скорость движения
+        self.stop_speed = 1250  # Скорость для остановки
 
     def process_frame(self):
         ret, frame = self.camera.read()
         if not ret:
-            return None, None
+            return None
+        return frame
 
-        # Преобразование изображения
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 50, 150)  # Поиск границ
+    def detect_traffic_light(self, frame):
+        # Преобразуем изображение в HSV для лучшего выделения цветов
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Обнаружение маркеров или разметки
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        return frame, contours
+        # Диапазоны для каждого цвета светофора
+        red_lower = np.array([0, 120, 70])
+        red_upper = np.array([10, 255, 255])
+        yellow_lower = np.array([20, 100, 100])
+        yellow_upper = np.array([30, 255, 255])
+        green_lower = np.array([40, 50, 50])
+        green_upper = np.array([90, 255, 255])
 
-    def detect_marker(self, contours):
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 500:  # Отбрасываем слишком маленькие контуры
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = w / h
-                if 2 < aspect_ratio < 5:  # Пример условия для распознавания маркера
-                    return (x, y, w, h)
-        return None
+        # Маски для каждого цвета
+        mask_red = cv2.inRange(hsv, red_lower, red_upper)
+        mask_yellow = cv2.inRange(hsv, yellow_lower, yellow_upper)
+        mask_green = cv2.inRange(hsv, green_lower, green_upper)
 
-    def measure_distance(self):
+        # Проверяем наличие цветов
+        red_detected = np.any(mask_red)
+        yellow_detected = np.any(mask_yellow)
+        green_detected = np.any(mask_green)
+
+        return red_detected, yellow_detected, green_detected
+
+    def recognize_signal(self, red_detected, yellow_detected, green_detected):
+        if green_detected:
+            return "Зеленый"
+        elif red_detected:
+            return "Красный"
+        elif yellow_detected:
+            return "Желтый"
+        return "Неизвестный"
+
+    def start_on_green_light(self):
+        print("Программа запущена. Ожидаем зеленый сигнал светофора...")
         while True:
-            frame, contours = self.process_frame()
+            frame = self.process_frame()
             if frame is None:
                 continue
 
-            marker = self.detect_marker(contours)
+            # Распознаем сигнал светофора
+            red_detected, yellow_detected, green_detected = self.detect_traffic_light(frame)
+            signal = self.recognize_signal(red_detected, yellow_detected, green_detected)
 
-            if marker:
-                x, y, w, h = marker
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Отображение маркера
-                center_x = x + w // 2
+            # Если зеленый сигнал, начинаем движение
+            if signal == "Зеленый":
+                print("Сигнал светофора: Зеленый - Начало движения.")
+                self.arduino.set_speed(self.default_speed)  # Устанавливаем стандартную скорость
+                break  # Выход из цикла, начало движения
 
-                # Логика определения четвертей
-                if self.previous_marker is not None:
-                    prev_x, prev_y = self.previous_marker
-                    if abs(center_x - prev_x) > 50:  # Пороговое значение
-                        self.quarters_count += 1
-                        print(f"Пройдено четвертей: {self.quarters_count}")
-
-                self.previous_marker = (center_x, y)
-
-            # Отображение результата
-            cv2.putText(frame, f"Quarters: {self.quarters_count}", (50, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
-            cv2.imshow("Frame", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            else:
+                print(f"Сигнал светофора: {signal} - Ожидание зеленого сигнала.")
+                self.arduino.set_speed(self.stop_speed)  # Останавливаемся
+                # Отображаем изображение для отладки
+                cv2.imshow("Frame", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
     def stop(self):
+        self.arduino.stop()
         self.camera.release()
         cv2.destroyAllWindows()
