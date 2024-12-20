@@ -1,75 +1,88 @@
 import cv2
 import numpy as np
 
-class StopSignDetectionCar:
-    def __init__(self, arduino):
-        self.arduino = arduino
-        self.camera = cv2.VideoCapture(0)  # Подключение камеры
-        self.default_speed = 1350
-        self.stop_sign_template = cv2.imread("stop_sign_template.jpg", 0)  # Шаблон знака
-
-    def process_frame(self):
-        ret, frame = self.camera.read()
-        if not ret:
-            return None, None
-
-        # Преобразование в HSV
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-        # Определение красного цвета
-        lower_red1 = np.array([0, 70, 50])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 70, 50])
-        upper_red2 = np.array([180, 255, 255])
-
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask = mask1 + mask2
-
-        # Нахождение контуров
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-        return frame, contours
-
-    def detect_stop_sign(self, frame, contours):
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 500:  # Отбрасываем маленькие области
-                # Аппроксимация контура
-                approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
-                if len(approx) > 8:  # Проверка на круглую форму
-                    x, y, w, h = cv2.boundingRect(approx)
-                    roi = frame[y:y+h, x:x+w]
-
-                    # Сравнение с шаблоном знака
-                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                    resized_roi = cv2.resize(gray_roi, (self.stop_sign_template.shape[1], self.stop_sign_template.shape[0]))
-                    result = cv2.matchTemplate(resized_roi, self.stop_sign_template, cv2.TM_CCOEFF_NORMED)
-
-                    if np.max(result) > 0.7:  # Если совпадение достаточно высокое
-                        return True
-
-        return False
-
-    def stop_before_sign(self):
-        while True:
-            frame, contours = self.process_frame()
-            if frame is None:
-                continue
-
-            if self.detect_stop_sign(frame, contours):
-                self.arduino.stop()
-                print("Остановка перед знаком 'Движение запрещено'")
-                break
-            else:
-                self.arduino.set_speed(self.default_speed)
-
-            # Для отладки показываем изображение
-            cv2.imshow("Frame", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
+class Arduino:
+    def set_speed(self, speed):
+        print(f"Установлена скорость: {speed}")
+    
+    def set_angle(self, angle):
+        print(f"Установлен угол поворота: {angle}")
+    
     def stop(self):
-        self.arduino.stop()
-        self.camera.release()
-        cv2.destroyAllWindows()
+        print("Автомобиль остановлен")
+
+# Инициализация Arduino
+arduino = Arduino()
+
+# Константы
+CAR_SPEED = 1300  # Скорость движения
+RED_THRESHOLD = 170000  # Порог для красного цвета
+GREEN_THRESHOLD = 170000  # Порог для зеленого цвета
+LINE_THRESHOLD = 50  # Порог для обнаружения линии
+ANGLE_CORRECTION = 10  # Коррекция угла
+
+# Функция для обнаружения разметки
+def detect_line(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, LINE_THRESHOLD)
+
+    if lines is not None:
+        for rho, theta in lines[0]:
+            angle = np.rad2deg(theta)  # Преобразуем угол в градусы
+            offset = angle - 90  # Отклонение от прямого движения
+            return offset
+    return 0  # Если линия не найдена
+
+# Функция для обнаружения светофора
+def detect_traffic_light(image):
+    height, width, _ = image.shape
+
+    # Разделяем изображение на три сектора (верхний, средний, нижний)
+    top = image[0:height//3, 2*width//3:]
+    middle = image[height//3:2*height//3, 2*width//3:]
+    bottom = image[2*height//3:, 2*width//3:]
+
+    # Определяем цвет в каждом секторе
+    if np.sum(top[:, :, 2]) > RED_THRESHOLD:  # Красный цвет
+        return "red"
+    elif np.sum(bottom[:, :, 1]) > GREEN_THRESHOLD:  # Зеленый цвет
+        return "green"
+    else:
+        return "none"
+
+# Основной цикл
+def main():
+    cap = cv2.VideoCapture(0)  # Открываем камеру
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Обнаруживаем линию разметки
+        line_offset = detect_line(frame)
+        if line_offset < -10:
+            arduino.set_angle(90 - ANGLE_CORRECTION)  # Поворот вправо
+        elif line_offset > 10:
+            arduino.set_angle(90 + ANGLE_CORRECTION)  # Поворот влево
+        else:
+            arduino.set_angle(90)  # Прямое движение
+
+        # Проверяем светофор
+        light = detect_traffic_light(frame)
+        if light == "red":
+            arduino.stop()
+        elif light == "green":
+            arduino.set_speed(CAR_SPEED)
+
+        # Отображаем изображение для отладки
+        cv2.imshow("Frame", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
